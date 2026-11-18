@@ -39,8 +39,9 @@ python -m http.server 8765
 ## 目录
 
 ```
-index.html                  入口（微信内给提示页，其余直接跳转）
-christmas-tree-gesture.html 主页面（手势 3D 树）
+index.html                  主页面（手势 3D 树），根路径直接打开就是它
+open-in-browser.html        微信内提示页（引导「在浏览器打开」）
+christmas-tree-gesture.html 旧地址，自动跳到根路径（保留旧分享链接）
 christmas-tree.html         2D 备用版
 main.js                     主逻辑源码；页面实际加载的是 assets/bundle.js
 gesture-engine.mjs          手势识别逻辑（纯函数，可单测）
