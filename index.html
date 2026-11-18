@@ -84,18 +84,13 @@ h1 .emoji {
  user-select: none;
 }
 
-/* 教程按钮组：贴左下角，与中间的底部状态条排成同一行、同一条基线
-   版式参考：按钮在左，快捷键小字紧跟其右（同一行，不再上下堆叠） */
+/* 教程按钮组：收进底部那条胶囊里，和状态文字排在同一行（不再单独定位） */
 .upload-wrapper {
- position: absolute;
- left: 24px;
- bottom: 20px;
- z-index: 25;
+ position: static;
  margin: 0;
  display: flex;
- flex-direction: row;              /* 按钮 + 快捷键提示并排一行 */
  align-items: center;
- gap: 14px;
+ gap: 10px;
  text-align: left;
  pointer-events: auto;
  transition: opacity 0.5s ease;
@@ -160,19 +155,47 @@ h1 .emoji {
 
 #gesture-hint {
  position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
- z-index: 20;
- /* 给左下角的教程按钮组让出位置：左右各留一条安全带，
-    超长文案（模型加载/摄像头报错）在窄屏上折行，绝不压住左边的小字 */
- max-width: calc(100vw - var(--left-gutter, 340px) * 2);
+ z-index: 25;
+ /* 一条胶囊装下全部内容：教程按钮 → 快捷键提示 → 分隔线 → 状态圆点 → 状态 → 操作提示 */
+ width: max-content;
+ max-width: calc(100vw - 32px);
  box-sizing: border-box;
- width: max-content;   /* 居中定位时默认只有半屏可用宽，这里放开成按内容撑开 */
  display: flex; align-items: center; gap: 10px;
- color: rgba(212, 175, 55, 0.85); font-size: 12px; letter-spacing: 1.5px;
- background: rgba(0, 0, 0, 0.55); padding: 8px 18px; border-radius: 20px;
+ color: rgba(212, 175, 55, 0.85); font-size: 12px; letter-spacing: 1.2px;
+ background: rgba(0, 0, 0, 0.55); padding: 7px 18px; border-radius: 20px;
  border: 1px solid rgba(212, 175, 55, 0.3);
  flex-wrap: wrap; justify-content: center;
  white-space: normal; line-height: 1.6;
  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+/* 按钮组和状态之间的竖线分隔 */
+#gesture-hint .bar-sep {
+ width: 1px; height: 14px; flex: none;
+ background: rgba(212, 175, 55, 0.22);
+}
+/* 按 H 隐藏按钮组时整段让位，别在胶囊里留一块空白 */
+#gesture-hint .upload-wrapper.ui-hidden { display: none; }
+#gesture-hint .upload-wrapper.ui-hidden + .bar-sep { display: none; }
+
+/* 胶囊里的「手势教程」：去掉了原来的黑底描边，只留金色文字 */
+#gesture-hint .upload-btn.ghost {
+ background: transparent;
+ border: 0;
+ padding: 2px 0;
+ margin: 0;
+ font-size: 11px;
+ font-weight: 600;
+ letter-spacing: 2px;
+ text-transform: none;
+ color: #d9b756;
+ backdrop-filter: none;
+ white-space: nowrap;
+}
+#gesture-hint .upload-btn.ghost:hover {
+ background: transparent;
+ color: #fceea7;
+ box-shadow: none;
+ text-shadow: 0 0 14px rgba(255, 217, 102, 0.6);
 }
 #gesture-hint.flash { animation: hintFlash 0.6s ease-out; }
 @keyframes hintFlash {
@@ -350,35 +373,26 @@ h1 .emoji {
  .tut-keys { text-align: center; line-height: 1.9; }
 }
 
-/* 中小尺寸桌面（≤1500px）：状态条字号收一档、左侧小字收窄，
-   长文案（模型启动/摄像头报错）才能仍在一行内 */
-@media (max-width: 1500px) and (min-width: 1301px) {
- #gesture-hint {
-  font-size: 11px; letter-spacing: 1px; padding: 8px 16px; gap: 8px;
-  --left-gutter: 310px;
- }
- .upload-wrapper { gap: 12px; }
- .upload-wrapper .hint-text { font-size: 9px; letter-spacing: 0.5px; }
+/* 中小尺寸桌面（≤1500px）：整条胶囊字号收一档，长文案仍能一行装下 */
+@media (max-width: 1500px) and (min-width: 821px) {
+ #gesture-hint { font-size: 11px; letter-spacing: 0.8px; padding: 7px 15px; gap: 8px; }
+ #gesture-hint .upload-btn.ghost { font-size: 10.5px; letter-spacing: 1.5px; }
+ .upload-wrapper .hint-text { letter-spacing: 0.5px; }
 }
 
-/* 窄屏桌面（≤1300px）：左侧按钮组和中间的胶囊条会撞在一起，
-   先把快捷键小字收起来，只保留教程按钮，避免文字压字 */
-@media (max-width: 1300px) and (min-width: 821px) {
+/* 窄屏桌面（≤1180px）：快捷键小字先让位，只保留「手势教程 + 状态」 */
+@media (max-width: 1180px) and (min-width: 821px) {
  .upload-wrapper .hint-text { display: none; }
- .upload-wrapper { gap: 0; }
- #gesture-hint {
-  font-size: 11px; letter-spacing: 1px; padding: 8px 16px; gap: 8px;
-  --left-gutter: 160px;
- }
+ #gesture-hint .bar-sep { display: none; }
 }
 
 /* 手机：标题、提示条、预览窗都要收窄，否则会撑出横向滚动 */
 @media (max-width: 820px) {
  #ui-layer { padding-top: 22px; }
- /* 手机上状态条占满整行宽，按钮组只能放到它上方左侧；快捷键提示毫无意义，隐藏 */
- .upload-wrapper { left: 12px; bottom: 88px; }
+ /* 手机上整条胶囊折行，教程按钮放在最前面；快捷键提示毫无意义，隐藏 */
  .upload-wrapper .hint-text { display: none; }
- .upload-btn { padding: 9px 18px; font-size: 9px; letter-spacing: 2px; }
+ #gesture-hint .bar-sep { display: none; }
+ #gesture-hint .upload-btn.ghost { font-size: 10px; letter-spacing: 1px; }
  #gesture-hint {
   bottom: 14px; max-width: calc(100vw - 24px); box-sizing: border-box;
   flex-wrap: wrap; justify-content: center; gap: 6px 8px;
@@ -407,11 +421,6 @@ h1 .emoji {
 <div id="ui-layer">
  <h1>希望你的每天都是圣诞<span class="emoji">🎄</span></h1>
  <div class="signature">来自你的小粉丝</div>
-
- <div class="upload-wrapper">
- <button id="tutorial-btn" class="upload-btn ghost" type="button">手势教程</button>
- <div class="hint-text">H 隐藏按钮 · T 手势教程 · G 调试面板</div>
- </div>
 </div>
 
 <div id="webcam-wrapper">
@@ -420,6 +429,11 @@ h1 .emoji {
 </div>
 
 <div id="gesture-hint">
+ <div class="upload-wrapper">
+  <button id="tutorial-btn" class="upload-btn ghost" type="button">手势教程</button>
+  <div class="hint-text">H 隐藏按钮 · T 手势教程 · G 调试面板</div>
+ </div>
+ <span class="bar-sep" aria-hidden="true"></span>
  <span id="gh-dot"></span>
  <span id="gh-mode">把手举到摄像头前…</span>
  <span id="gh-tip">✊ 聚树 · 🖐 散开 · 🤏 看照片·再捏翻页 · ↑↓ 翻页 · U 回第一张 · O 看原图</span>
