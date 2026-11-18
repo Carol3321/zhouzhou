@@ -808,7 +808,8 @@ async function initMediaPipe() {
     .then((lm) => { handLandmarker = lm; })
     .catch((err) => {
       console.warn('手部模型加载失败:', err);
-      setHintText('⚠ 手部模型加载失败，摄像头正常但没有手势识别');
+      const why = err && err.message ? err.message : '未知原因';
+      setHintText(`⚠ 手势识别没启动起来（${why}）· 照片和键盘操作照常可用，刷新可重试`);
     });
 }
 
@@ -840,21 +841,91 @@ function startModelLoad() {
 
   modelReady = (async () => {
     const [vision, blob] = await Promise.all([visionReady, modelBlob]);
-    setHintText('识别模型已下载完 · 正在启动识别引擎（约 10 秒）…', false);
-    return HandLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath: URL.createObjectURL(blob),
-        delegate: 'GPU'
-      },
-      runningMode: 'VIDEO',
-      numHands: 1,
-      // 用 MediaPipe 默认阈值（0.5）：更宽容，暗光/手偏一点也能跟住
-      minHandDetectionConfidence: 0.5,
-      minHandPresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
+    const modelUrl = URL.createObjectURL(blob);
+
+    // GPU 档：多数机器 1~3 秒就好；但部分显卡 / 关了硬件加速的浏览器会**一直不返回**，
+    // 旧代码没有超时，页面就永远停在「正在启动识别引擎」——现在超时即换 CPU 重来。
+    if (supportsWebGL2()) {
+      const stop = announceEngine('正在启动识别引擎（GPU）');
+      try {
+        return await withTimeout(
+          HandLandmarker.createFromOptions(vision, handOptions(modelUrl, 'GPU')),
+          GPU_ENGINE_TIMEOUT_MS,
+          'GPU 引擎启动'
+        );
+      } catch (err) {
+        console.warn('GPU 模式启动失败，改用 CPU 模式:', err);
+        if (STATE.mode !== 'FOCUS') setHintText('GPU 模式启动失败，正在改用 CPU 模式…', false);
+      } finally {
+        stop();
+      }
+    }
+
+    // CPU 兜底：慢一些，但几乎所有机器都能跑起来。
+    // 用新的 fileset，避免复用上面那次可能已经卡死的 wasm 实例。
+    const visionCpu = await FilesetResolver.forVisionTasks(WASM_BASE);
+    const stop = announceEngine('正在启动识别引擎（CPU）');
+    try {
+      return await withTimeout(
+        HandLandmarker.createFromOptions(visionCpu, handOptions(modelUrl, 'CPU')),
+        CPU_ENGINE_TIMEOUT_MS,
+        'CPU 引擎启动'
+      );
+    } finally {
+      stop();
+    }
   })();
   return modelReady;
+}
+
+// ============ 引擎启动的保护措施 ============
+const GPU_ENGINE_TIMEOUT_MS = 20000;   // GPU 20 秒还没好，就不等了
+const CPU_ENGINE_TIMEOUT_MS = 45000;   // CPU 慢，给足时间
+
+/** WebGL 都拿不到的话就别试 GPU 了，直接 CPU */
+function supportsWebGL2() {
+  try {
+    const c = document.createElement('canvas');
+    return !!(c.getContext('webgl2') || c.getContext('webgl'));
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 给一个可能永不返回的 Promise 加超时，否则页面会安静地卡住 */
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}超时（${Math.round(ms / 1000)} 秒）`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
+}
+
+/** 边启动边把「已经等了几秒」写进底部提示，让人知道没死 */
+function announceEngine(label) {
+  const started = performance.now();
+  const tick = () => {
+    if (STATE.mode === 'FOCUS') return;
+    const secs = Math.round((performance.now() - started) / 1000);
+    setHintText(`${label} · 已等 ${secs} 秒`, false);
+  };
+  tick();
+  const id = setInterval(tick, 1000);
+  return () => clearInterval(id);
+}
+
+function handOptions(modelUrl, delegate) {
+  return {
+    baseOptions: { modelAssetPath: modelUrl, delegate },
+    runningMode: 'VIDEO',
+    numHands: 1,
+    // 用 MediaPipe 默认阈值（0.5）：更宽容，暗光/手偏一点也能跟住
+    minHandDetectionConfidence: 0.5,
+    minHandPresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  };
 }
 
 /** 边下边报进度；content-length 是压缩后的大小，所以只报"已下载多少"不报百分比 */
