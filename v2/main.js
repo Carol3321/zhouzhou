@@ -32,8 +32,10 @@ const STATE = {
   mode: 'TREE', focusIndex: 0, focusTarget: null,
   hand: { detected: false, x: 0, y: 0 },
   rotation: { x: 0, y: 0 },
-  // 输入源：gesture = 摄像头手势，touch = 触摸/鼠标。手机上手势不灵时可切到 touch
-  inputMode: 'gesture',
+  // 输入源：gesture = 摄像头手势，touch = 触摸/鼠标。
+  // 手机上默认就是触摸：手势在手机上要额外下 25MB 资源、还要弹摄像头授权，
+  // 只能是"想要才开"的彩蛋，不能当成进门第一件事。
+  inputMode: IS_MOBILE ? 'touch' : 'gesture',
   touchActiveAt: 0,      // 最近一次触摸的时间戳：触摸后短暂屏蔽手势，避免两手打架
   gestureReady: false    // 摄像头 + 模型是否都真的就绪
 };
@@ -68,14 +70,26 @@ async function init() {
   setupTouchControls();     // 触摸/鼠标操作，手机上的主要交互方式
   syncControls();
 
-  // 先让相册和相机跑起来：识别模型 6MB + 100 张缩略图同时抢带宽，慢网下两边都卡。
-  // 缩略图优先，模型最多等 12 秒再开始下。
+  // 先让相册跑起来：缩略图优先。
+  // 手机上完全不预载手势资源（模型 7.5MB + wasm 8.7MB），也不主动弹摄像头授权 ——
+  // 触摸才是手机上的主力交互，手势等用户点右上角主动开。
   const galleryDone = loadGallery();
-  setTimeout(() => startModelLoad().catch((err) => console.warn('模型预热失败:', err)), 12000);
-  // 相册一到位就开始下模型。原图不预下载：默认展示高清优化图，原图只在按 O 时单独取
-  galleryDone.finally(() => {
-    startModelLoad().catch((err) => console.warn('模型预热失败:', err));
-  });
+  let engineBoot;
+  if (IS_MOBILE) {
+    engineBoot = Promise.resolve();
+    document.body.classList.add('gesture-off');
+    setHintText('👆 拖动旋转 · 双击聚散 · 点照片', false);
+  } else {
+    // 桌面端老规矩：缩略图优先，模型最多等 12 秒再开始下
+    setTimeout(() => startModelLoad().catch((err) => console.warn('模型预热失败:', err)), 12000);
+    galleryDone.finally(() => {
+      startModelLoad().catch((err) => console.warn('模型预热失败:', err));
+    });
+    engineBoot = Promise.race([
+      initMediaPipe(),
+      new Promise(resolve => setTimeout(resolve, 8000))
+    ]).catch(err => console.warn('MediaPipe init skipped:', err));
+  }
 
   // 第二次打开时模型/缩略图直接走缓存
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
@@ -83,10 +97,7 @@ async function init() {
   }
 
   await Promise.all([
-    Promise.race([
-      initMediaPipe(),
-      new Promise(resolve => setTimeout(resolve, 8000))
-    ]).catch(err => console.warn('MediaPipe init skipped:', err)),
+    engineBoot,
     Promise.race([
       galleryDone,
       new Promise(resolve => setTimeout(resolve, 6000))
@@ -865,8 +876,9 @@ async function initMediaPipe() {
     fallbackToTouch(cameraErrorText(err) + '（已切到触摸操作）');
     return;
   }
-  // 3) 模型在后台等（不阻塞页面显示）
-  modelReady
+  // 3) 模型在后台等（不阻塞页面显示）。用 startModelLoad 而不是直接读 modelReady：
+  //    手机上模型是等用户切到手势才开始下的，这里不能假设它已经在跑
+  startModelLoad()
     .then((lm) => { handLandmarker = lm; STATE.gestureReady = true; })
     .catch((err) => {
       console.warn('手部模型加载失败:', err);
@@ -1549,7 +1561,13 @@ function setInputMode(mode, opts = {}) {
     setHint(STATE.mode);
     if (changed && !opts.quiet) flashHint();
   } else {
-    if (changed && !opts.quiet) setHintText('正在打开摄像头…', false);
+    document.body.classList.remove('gesture-off');   // 用户主动开了手势，教程/提示恢复手势文案
+    // 手机上模型从来没预载过，切过来才第一次下（25MB，慢网要等一会儿）
+    const firstTime = !modelReady;
+    if (changed && !opts.quiet) {
+      setHintText(firstTime ? '正在打开摄像头并下载识别模型（首次约 5MB）…' : '正在打开摄像头…', false);
+    }
+    startModelLoad().catch(() => {});
     initMediaPipe().catch(() => {});
   }
   syncControls();
