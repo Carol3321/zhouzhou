@@ -12,6 +12,9 @@ self.addEventListener('activate', (e) => e.waitUntil((async () => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  // 分片下载（Range 请求）交给网络自己处理：SW 缓存里存的是完整文件，
+  // 如果在这里返回整份响应，主线程按片拼接就会拿到重复数据
+  if (e.request.headers.get('range')) return;
   const hit =
     url.pathname.includes('/assets/wasm/') ||
     url.pathname.endsWith('hand_landmarker.task') ||
