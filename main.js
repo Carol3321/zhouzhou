@@ -831,12 +831,11 @@ function startModelLoad() {
   const MODEL_URL = './assets/hand_landmarker.task';
 
   const visionReady = FilesetResolver.forVisionTasks(WASM_BASE);
-  // 模型实际 7.46MB；分片下载时用服务器给的真实大小覆盖它
-  let MODEL_BYTES = 7.46 * 1048576;
+  // 模型解压后 7.46MB，用它算百分比和剩余时间，让人知道要等多久
+  const MODEL_BYTES = 7.46 * 1048576;
   const t0 = performance.now();
-  const modelBlob = fetchModelWithRetry(MODEL_URL, (got, total) => {
+  const modelBlob = fetchModelWithRetry(MODEL_URL, (got) => {
     if (STATE.mode === 'FOCUS') return;   // 正在翻照片就别抢提示
-    if (total) MODEL_BYTES = total;
     const pct = Math.min(99, Math.round((got / MODEL_BYTES) * 100));
     const secs = (performance.now() - t0) / 1000;
     const speed = got / Math.max(secs, 1);                       // 字节/秒
@@ -946,7 +945,7 @@ async function fetchModelWithRetry(url, onProgress, tries = 3) {
   let lastErr = null;
   for (let i = 0; i < tries; i++) {
     try {
-      return await fetchModelParallel(url, onProgress);
+      return await fetchWithProgress(url, onProgress);
     } catch (err) {
       lastErr = err;
       console.warn(`模型下载失败（第 ${i + 1}/${tries} 次）:`, err);
@@ -955,85 +954,7 @@ async function fetchModelWithRetry(url, onProgress, tries = 3) {
       await sleep(1500 * (i + 1));
     }
   }
-  // 分片这路彻底不行，最后再退回单连接完整下载试一次
-  try {
-    return await fetchWithProgress(url, onProgress);
-  } catch (err) {
-    throw new Error(`模型下载失败：${(err && err.message) || (lastErr && lastErr.message) || '网络中断'}`);
-  }
-}
-
-/**
- * 分片并发下载。
- * GitHub Pages 对单个连接限速很厉害（实测 46KB/s），但开 6 个并发能到 170KB/s+，
- * 16MB 的模型从三分钟缩到一分钟。分片请求服务器不套 gzip，拿到的就是原始字节，
- * 按序拼起来即可。下完顺便写进 SW 缓存，下次打开直接命中。
- */
-async function fetchModelParallel(url, onProgress) {
-  const absolute = new URL(url, location.href).href;
-
-  // 0) 已经有缓存就直接用，别再下 7.8MB（第二次打开要秒开）
-  try {
-    if (typeof caches !== 'undefined') {
-      const cache = await caches.open('mp-assets-v4');
-      const hit = await cache.match(absolute);
-      if (hit) {
-        const blob = await hit.blob();
-        if (blob.size > 1024 * 1024) {
-          if (onProgress) onProgress(blob.size, blob.size);
-          return blob;
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('读取模型缓存失败，继续联网下载:', e);
-  }
-
-  // 1) 先探一下总大小（Range 0-0 的 206 响应里带 Content-Range: bytes 0-0/总长）
-  let total = 0;
-  try {
-    const probe = await fetch(absolute, { headers: { Range: 'bytes=0-0' } });
-    const cr = probe.headers.get('content-range') || '';
-    total = Number(cr.split('/')[1]) || 0;
-    if (probe.body) probe.body.cancel().catch(() => {});
-  } catch (e) {
-    console.warn('探测模型大小失败，退回单连接下载:', e);
-  }
-  if (!total) return fetchWithProgress(url, onProgress);
-
-  // 2) 分片并发；片数按大小来，别把一个小文件切成几十片
-  const PARTS = Math.max(2, Math.min(8, Math.round(total / (512 * 1024))));
-  const size = Math.ceil(total / PARTS);
-  const parts = new Array(PARTS).fill(null);
-  let got = 0;
-
-  await Promise.all(parts.map(async (_, i) => {
-    const start = i * size;
-    const end = Math.min(total - 1, start + size - 1);
-    if (start > end) { parts[i] = new Uint8Array(0); return; }
-    const res = await fetch(absolute, { headers: { Range: `bytes=${start}-${end}` } });
-    if (res.status !== 206 && !res.ok) throw new Error(`分片 ${i + 1}/${PARTS} 失败 HTTP ${res.status}`);
-    const buf = new Uint8Array(await res.arrayBuffer());
-    parts[i] = buf;
-    got += buf.length;
-    if (onProgress) onProgress(got, total);
-  }));
-
-  const blob = new Blob(parts, { type: 'application/octet-stream' });
-
-  // 3) 写进 SW 缓存（跟 sw.js 里同一个 cache 名 + 同一个 URL），下次秒开
-  try {
-    if (typeof caches !== 'undefined') {
-      const cache = await caches.open('mp-assets-v4');
-      await cache.put(
-        new Request(absolute),
-        new Response(blob, { headers: { 'content-type': 'application/octet-stream' } })
-      );
-    }
-  } catch (e) {
-    console.warn('模型写入缓存失败（不影响本次使用）:', e);
-  }
-  return blob;
+  throw new Error(`模型下载失败：${(lastErr && lastErr.message) || '网络中断'}`);
 }
 
 /** 边下边报进度；content-length 是压缩后的大小，所以只报"已下载多少"不报百分比 */
