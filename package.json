@@ -1,0 +1,23 @@
+{
+  "name": "zhouzhou",
+  "version": "1.0.0",
+  "description": "希望你的每天都是圣诞 —— 手势控制的 3D 圣诞树",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild main.js --bundle --minify --format=iife --outfile=assets/bundle.js",
+    "build:v2": "esbuild v2/main.js --bundle --minify --format=iife --outfile=v2/bundle.js",
+    "serve": "python -m http.server 8765"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Carol3321/zhouzhou.git"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "0.10.20",
+    "three": "0.160.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

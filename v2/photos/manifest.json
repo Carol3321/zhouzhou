@@ -1,0 +1,104 @@
+{
+ "photos": [
+  {
+   "id": "photo01",
+   "src": "photo01.jpg",
+   "orig": "orig/photo01.jpg",
+   "full": "full/photo01.webp",
+   "mid": "mid/photo01.webp",
+   "thumb": "thumb/photo01.webp",
+   "w": 4096,
+   "h": 2730,
+   "thumbW": 512,
+   "thumbH": 341,
+   "dir": "../assets/photos"
+  },
+  {
+   "id": "photo02",
+   "src": "photo02.jpg",
+   "orig": "orig/photo02.jpg",
+   "full": "full/photo02.webp",
+   "mid": "mid/photo02.webp",
+   "thumb": "thumb/photo02.webp",
+   "w": 4284,
+   "h": 5712,
+   "thumbW": 384,
+   "thumbH": 512,
+   "dir": "../assets/photos"
+  },
+  {
+   "id": "photo03",
+   "src": "photo03.jpg",
+   "orig": "orig/photo03.jpg",
+   "full": "full/photo03.webp",
+   "mid": "mid/photo03.webp",
+   "thumb": "thumb/photo03.webp",
+   "w": 4284,
+   "h": 5712,
+   "thumbW": 384,
+   "thumbH": 512,
+   "dir": "../assets/photos"
+  },
+  {
+   "id": "photo04",
+   "src": "photo04.jpg",
+   "orig": "orig/photo04.jpg",
+   "full": "full/photo04.webp",
+   "mid": "mid/photo04.webp",
+   "thumb": "thumb/photo04.webp",
+   "w": 1381,
+   "h": 1080,
+   "thumbW": 512,
+   "thumbH": 400,
+   "dir": "../assets/photos"
+  },
+  {
+   "id": "photo05",
+   "src": "photo05.jpg",
+   "orig": "orig/photo05.jpg",
+   "full": "full/photo05.webp",
+   "mid": "mid/photo05.webp",
+   "thumb": "thumb/photo05.webp",
+   "w": 1320,
+   "h": 2868,
+   "thumbW": 236,
+   "thumbH": 512,
+   "dir": "../assets/photos"
+  },
+  {
+   "id": "photo06",
+   "src": "photo06.jpg",
+   "orig": "orig/photo06.jpg",
+   "full": "full/photo06.webp",
+   "mid": "mid/photo06.webp",
+   "thumb": "thumb/photo06.webp",
+   "w": 1320,
+   "h": 2337,
+   "thumbW": 289,
+   "thumbH": 512,
+   "dir": "../assets/photos"
+  },
+  {
+   "id": "photo07",
+   "dir": "photos",
+   "w": 2133,
+   "h": 1600,
+   "thumb": "thumb/photo07.webp",
+   "thumbW": 512,
+   "thumbH": 384,
+   "mid": "mid/photo07.webp",
+   "full": "full/photo07.webp"
+  },
+  {
+   "id": "photo08",
+   "dir": "photos",
+   "w": 2219,
+   "h": 1024,
+   "thumb": "thumb/photo08.webp",
+   "thumbW": 512,
+   "thumbH": 236,
+   "mid": "mid/photo08.webp",
+   "full": "full/photo08.webp"
+  }
+ ]
+}
