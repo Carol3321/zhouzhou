@@ -842,45 +842,65 @@ function startModelLoad() {
   modelReady = (async () => {
     const [vision, blob] = await Promise.all([visionReady, modelBlob]);
     const modelUrl = URL.createObjectURL(blob);
+    let stopHud = announceEngine('正在启动识别引擎');
 
-    // GPU 档：多数机器 1~3 秒就好；但部分显卡 / 关了硬件加速的浏览器会**一直不返回**，
-    // 旧代码没有超时，页面就永远停在「正在启动识别引擎」——现在超时即换 CPU 重来。
-    if (supportsWebGL2()) {
-      const stop = announceEngine('正在启动识别引擎（GPU）');
-      try {
-        return await withTimeout(
-          HandLandmarker.createFromOptions(vision, handOptions(modelUrl, 'GPU')),
-          GPU_ENGINE_TIMEOUT_MS,
-          'GPU 引擎启动'
-        );
-      } catch (err) {
-        console.warn('GPU 模式启动失败，改用 CPU 模式:', err);
-        if (STATE.mode !== 'FOCUS') setHintText('GPU 模式启动失败，正在改用 CPU 模式…', false);
-      } finally {
-        stop();
-      }
-    }
+    const make = (delegate) => (async () => {
+      // CPU 用一份新的 fileset：万一 GPU 那次把 wasm 实例卡住了，两边互不影响
+      const fs2 = delegate === 'CPU' ? await FilesetResolver.forVisionTasks(WASM_BASE) : vision;
+      return HandLandmarker.createFromOptions(fs2, handOptions(modelUrl, delegate));
+    })();
 
-    // CPU 兜底：慢一些，但几乎所有机器都能跑起来。
-    // 用新的 fileset，避免复用上面那次可能已经卡死的 wasm 实例。
-    const visionCpu = await FilesetResolver.forVisionTasks(WASM_BASE);
-    const stop = announceEngine('正在启动识别引擎（CPU）');
-    try {
-      return await withTimeout(
-        HandLandmarker.createFromOptions(visionCpu, handOptions(modelUrl, 'CPU')),
-        CPU_ENGINE_TIMEOUT_MS,
-        'CPU 引擎启动'
+    // GPU 档：多数机器 1~4 秒就好。但部分显卡、关了硬件加速的浏览器、
+    // 或者刚下完 16MB 模型的机器上，它可能要几十秒——旧代码没有超时，
+    // 页面就永远停在「正在启动识别引擎」。
+    const gpu = supportsWebGL2()
+      ? make('GPU')
+      : Promise.reject(new Error('浏览器拿不到 WebGL'));
+
+    // CPU 备用通道：GPU 失败、或 25 秒还没结果，就**并行**起起来。
+    // 关键在于不放弃 GPU 那一次——它往往只是慢，最后会成功；哪路先成功就用哪路。
+    const cpu = new Promise((resolve, reject) => {
+      let started = false;
+      const kick = (why) => {
+        if (started) return;
+        started = true;
+        console.warn('启用 CPU 备用通道:', why);
+        stopHud();
+        stopHud = announceEngine('GPU 较慢，正在同时启用 CPU 备用通道');
+        make('CPU').then(resolve, reject);
+      };
+      const timer = setTimeout(
+        () => kick(`GPU 超过 ${Math.round(GPU_ENGINE_FAILOVER_MS / 1000)} 秒没响应`),
+        GPU_ENGINE_FAILOVER_MS
       );
-    } finally {
-      stop();
-    }
+      gpu.then(() => clearTimeout(timer), () => { clearTimeout(timer); kick('GPU 启动失败'); });
+    });
+
+    const lm = await Promise.race([
+      Promise.race([gpu, cpu]),
+      new Promise((_, rej) => setTimeout(
+        () => rej(new Error(`引擎启动超过 ${ENGINE_TOTAL_TIMEOUT_MS / 1000} 秒`)),
+        ENGINE_TOTAL_TIMEOUT_MS
+      ))
+    ]).catch((err) => {
+      // 真的超时了也别把后到的结果扔掉：哪一路后来上来了就悄悄接上，手势照样能用
+      [gpu, cpu].forEach((p) => p.then((x) => { if (!handLandmarker) handLandmarker = x; }, () => {}));
+      throw err;
+    }).finally(() => stopHud());
+
+    // 输掉的那一路若最终也起来了，关掉它，别白占一份 wasm 内存
+    [gpu, cpu].forEach((p) => p.then(
+      (x) => { if (x && x !== lm) { try { x.close(); } catch (e) { /* 关不掉就算了 */ } } },
+      () => {}
+    ));
+    return lm;
   })();
   return modelReady;
 }
 
 // ============ 引擎启动的保护措施 ============
-const GPU_ENGINE_TIMEOUT_MS = 20000;   // GPU 20 秒还没好，就不等了
-const CPU_ENGINE_TIMEOUT_MS = 45000;   // CPU 慢，给足时间
+const GPU_ENGINE_FAILOVER_MS = 25000;    // GPU 25 秒没结果，就并行把 CPU 也起起来
+const ENGINE_TOTAL_TIMEOUT_MS = 180000;  // 两条路都迟迟没结果，3 分钟后才报错
 
 /** WebGL 都拿不到的话就别试 GPU 了，直接 CPU */
 function supportsWebGL2() {
@@ -890,17 +910,6 @@ function supportsWebGL2() {
   } catch (e) {
     return false;
   }
-}
-
-/** 给一个可能永不返回的 Promise 加超时，否则页面会安静地卡住 */
-function withTimeout(promise, ms, label) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label}超时（${Math.round(ms / 1000)} 秒）`)), ms);
-    promise.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); }
-    );
-  });
 }
 
 /** 边启动边把「已经等了几秒」写进底部提示，让人知道没死 */
