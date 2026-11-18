@@ -47,17 +47,18 @@ async function init() {
   setupEvents();
   cacheUi();
 
-  // 先让相册和相机跑起来：识别模型 6MB + 100 张缩略图同时抢带宽，慢网下两边都卡。
-  // 缩略图优先，模型最多等 12 秒再开始下。
+  // 缩略图先抢带宽，但只让步 1.2 秒——以前让 12 秒，等于白等。
+  // 慢网下真正拖时间的是「模型 7.8MB + wasm 8.7MB」，越早开始越早能用。
   const galleryDone = loadGallery();
-  setTimeout(() => startModelLoad().catch((err) => console.warn('模型预热失败:', err)), 12000);
-  // 相册一到位就开始下模型。原图不预下载：默认展示高清优化图，原图只在按 O 时单独取
+  setTimeout(() => startModelLoad().catch((err) => console.warn('模型预热失败:', err)), 1200);
+  // 相册一到位就（再）催一次，startModelLoad 是幂等的
   galleryDone.finally(() => {
     startModelLoad().catch((err) => console.warn('模型预热失败:', err));
   });
 
-  // 第二次打开时模型/缩略图直接走缓存
-  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  // 第二次打开时模型/缩略图直接走缓存（localhost 也注册，方便本地验证缓存链路）
+  const swHost = location.protocol === 'https:' || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  if ('serviceWorker' in navigator && swHost) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 
@@ -820,55 +821,101 @@ async function initMediaPipe() {
 
 
 /**
- * 页面一打开就开始拉识别模型（不等摄像头授权），
- * 并把下载进度显示在底部提示里——16MB 的包在慢网下要几分钟，
- * 没有进度条会被当成卡死。
+ * 页面一打开就开始拉识别引擎（不等摄像头授权）。三件事决定它快不快：
+ * 1) 模型 7.8MB 和 wasm 8.7MB 必须**同时**下——以前是下完模型才开始下 wasm，白等一分钟；
+ * 2) 下完自己写进 Cache Storage——首次打开时 Service Worker 还没接管页面，靠它存不住，
+ *    结果第二次打开还得重下 16MB；
+ * 3) GPU 只快试 5 秒，失败立刻切 CPU，并记下来，下次直接走 CPU，不再白等这 5 秒。
  */
 let modelReady = null;
+const WASM_DIR = 'assets/wasm';
+const MODEL_URL = './assets/hand_landmarker.task';
+const MODEL_BYTES = 7819105;          // 实际字节数，用来算百分比和剩余时间
+const WASM_BYTES_SIMD = 8689767;
+const WASM_BYTES_NOSIMD = 8554370;
+const ASSET_CACHE = 'mp-assets-v4';   // 和 sw.js 同一个桶，老访客已有的缓存不作废
+const SIMD_PROBE = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 254, 15, 26, 11]);
+
+function hasWasmSimd() {
+  try { return WebAssembly.validate(SIMD_PROBE); } catch (e) { return false; }
+}
+
+/** 把下好的大文件塞进 Cache Storage；隐私模式/配额满时静默跳过，不影响使用 */
+async function cacheAsset(url, blob, type) {
+  if (!('caches' in window) || !blob) return;
+  try {
+    const cache = await caches.open(ASSET_CACHE);
+    await cache.put(new Request(url), new Response(blob, { headers: { 'Content-Type': type } }));
+  } catch (e) { /* ignore */ }
+}
+
+// GPU 建图在某些驱动/关了硬件加速的机器上会直接挂死。记一次，24 小时内不再白试
+const GPU_FAIL_KEY = 'gesture-gpu-fail-at';
+function gpuRecentlyFailed() {
+  try {
+    const t = +localStorage.getItem(GPU_FAIL_KEY) || 0;
+    return !!t && Date.now() - t < 24 * 3600 * 1000;
+  } catch (e) { return false; }
+}
+function markGpuFailed() { try { localStorage.setItem(GPU_FAIL_KEY, String(Date.now())); } catch (e) {} }
+function markGpuOk() { try { localStorage.removeItem(GPU_FAIL_KEY); } catch (e) {} }
+
 function startModelLoad() {
   if (modelReady) return modelReady;
-  const WASM_BASE = 'assets/wasm';
-  const MODEL_URL = './assets/hand_landmarker.task';
-
-  const visionReady = FilesetResolver.forVisionTasks(WASM_BASE);
-  // 模型解压后 7.46MB，用它算百分比和剩余时间，让人知道要等多久
-  const MODEL_BYTES = 7.46 * 1048576;
   const t0 = performance.now();
-  const modelBlob = fetchModelWithRetry(MODEL_URL, (got) => {
-    if (STATE.mode === 'FOCUS') return;   // 正在翻照片就别抢提示
-    const pct = Math.min(99, Math.round((got / MODEL_BYTES) * 100));
+  const simd = hasWasmSimd();
+  const wasmName = simd ? 'vision_wasm_internal' : 'vision_wasm_nosimd_internal';
+  const wasmUrl = `./${WASM_DIR}/${wasmName}.wasm`;
+  const total = MODEL_BYTES + (simd ? WASM_BYTES_SIMD : WASM_BYTES_NOSIMD);
+  const got = { model: 0, wasm: 0 };
+  const pf = window.__prefetch || null;   // index.html 里提前发起的请求，有就直接接上
+
+  const report = () => {
+    if (STATE.mode === 'FOCUS') return;
+    const sum = got.model + got.wasm;
+    const pct = Math.min(99, Math.round((sum / total) * 100));
     const secs = (performance.now() - t0) / 1000;
-    const speed = got / Math.max(secs, 1);                       // 字节/秒
-    const left = Math.max(0, (MODEL_BYTES - got) / Math.max(speed, 1));
+    const speed = sum / Math.max(secs, 1);                       // 字节/秒
+    const left = Math.max(0, (total - sum) / Math.max(speed, 1));
     const eta = left >= 90 ? `${Math.round(left / 60)} 分钟` : `${Math.max(1, Math.round(left))} 秒`;
-    setHintText(`识别模型 ${pct}% · 约还需 ${eta}`, false, true);
-  });
+    setHintText(`识别引擎 ${pct}% · ${(sum / 1048576).toFixed(1)}/${(total / 1048576).toFixed(1)}MB · 约还需 ${eta}`, false, true);
+  };
+
+  // ① 两个大文件并行下
+  const modelBlob = fetchModelWithRetry(MODEL_URL, (n) => { got.model = n; report(); }, pf && pf.model);
+  const wasmDone = prefetchWasm(wasmUrl, pf, (n) => { got.wasm = n; report(); });
 
   modelReady = (async () => {
-    const [vision, blob] = await Promise.all([visionReady, modelBlob]);
+    const [blob] = await Promise.all([modelBlob, wasmDone]);
+    cacheAsset(MODEL_URL, blob, 'application/octet-stream');
     const modelUrl = URL.createObjectURL(blob);
-    let stopHud = announceEngine('正在启动识别引擎');
 
-    // 1) GPU 只做「快试」：多数机器 1~4 秒就好。
-    //    但部分显卡、关了硬件加速的浏览器上它会一直不返回（旧代码没有超时，
-    //    页面就永远停在「正在启动识别引擎」），所以只给它 8 秒。
-    if (supportsWebGL2()) {
-      const gpuTry = HandLandmarker.createFromOptions(vision, handOptions(modelUrl, 'GPU'));
-      gpuTry.catch(() => { /* 下面统一处理，这里只防 unhandled rejection */ });
+    const visionPromise = FilesetResolver.forVisionTasks(WASM_DIR);
+    visionPromise.catch(() => {});   // 不走 GPU 分支时别留 unhandled rejection
+    let stopHud = announceEngine('正在初始化识别引擎');
+
+    // ② GPU 快试：正常机器 0.1~3 秒就好，所以只给 5 秒
+    if (supportsWebGL2() && !gpuRecentlyFailed()) {
+      const vision = await visionPromise;
+      // pump 里必须 .catch：直接 race 一个会 reject 的 promise，整个 race 当场失败，
+      // 下面的 CPU 兜底根本没机会跑——这正是「这次能起来、下次起不来」的病根之一
+      const gpuTry = HandLandmarker.createFromOptions(vision, handOptions(modelUrl, 'GPU'))
+        .catch((err) => { console.warn('GPU 建图失败:', err); return null; });
       const lm = await Promise.race([gpuTry, sleep(GPU_FAST_TRY_MS).then(() => null)]);
       if (lm) {
+        markGpuOk();
         stopHud();
         return lm;
       }
+      markGpuFailed();
       console.warn(`GPU ${GPU_FAST_TRY_MS / 1000} 秒没起来，改用 CPU 模式`);
       stopHud();
-      stopHud = announceEngine('GPU 较慢，正在改用 CPU 模式');
+      stopHud = announceEngine('GPU 没起来，改用 CPU 模式');
     }
 
-    // 2) CPU 兜底：慢一些，但几乎任何机器都能跑起来。
-    //    **不能设短超时**——线上实测它要 40 秒以上才把计算图编译完，
-    //    中途砍掉就等于永远起不来（上一版的病根）。
-    const visionCpu = await FilesetResolver.forVisionTasks(WASM_BASE);
+    // ③ CPU 兜底：几乎任何机器都能跑（实测单帧只要几毫秒）。
+    //    **不能设短超时**——慢机器编译计算图要几十秒，中途砍掉就等于永远起不来。
+    const visionCpu = await FilesetResolver.forVisionTasks(WASM_DIR);
     const cpuTry = HandLandmarker.createFromOptions(visionCpu, handOptions(modelUrl, 'CPU'));
     try {
       return await Promise.race([
@@ -888,8 +935,30 @@ function startModelLoad() {
   return modelReady;
 }
 
+/** 预热 wasm：先下下来（顺带报进度）并写进缓存，MediaPipe 真正加载时就走本地缓存，不再等一遍 */
+async function prefetchWasm(wasmUrl, pf, onProgress) {
+  try {
+    let res = null;
+    if (pf && pf.wasm) {
+      // index.html 里提前发的请求可能已经失败，失败了就自己再发一次
+      try { res = await pf.wasm; } catch (e) { res = null; }
+    }
+    if (!res || !res.ok) res = await fetch(wasmUrl);
+    const blob = await readStream(res, onProgress);
+    cacheAsset(wasmUrl, blob, 'application/wasm');
+    // wasm 的 loader 脚本才 200KB，顺手取掉，省得建图时再握手一次
+    const jsUrl = wasmUrl.replace(/\.wasm$/, '.js');
+    if (pf && pf.wasmJs) pf.wasmJs.catch(() => {});
+    else fetch(jsUrl).catch(() => {});
+    return blob;
+  } catch (e) {
+    console.warn('wasm 预热失败（MediaPipe 会自己再取一次，不影响功能）:', e);
+    return null;
+  }
+}
+
 // ============ 引擎启动的保护措施 ============
-const GPU_FAST_TRY_MS = 8000;            // GPU 只快试 8 秒，不成就换 CPU
+const GPU_FAST_TRY_MS = 5000;            // 真 GPU 建图 0.1~3 秒；超过 5 秒基本就是挂死了
 const ENGINE_TOTAL_TIMEOUT_MS = 240000;  // CPU 给足 4 分钟：慢机器编译计算图很吃时间
 
 function sleep(ms) {
@@ -941,11 +1010,12 @@ function handOptions(modelUrl, delegate) {
 }
 
 /** 16MB 在慢网/代理下很容易中途断流；断了就自动重下，别让页面永远停在某个百分比 */
-async function fetchModelWithRetry(url, onProgress, tries = 3) {
+async function fetchModelWithRetry(url, onProgress, firstResponse, tries = 3) {
   let lastErr = null;
   for (let i = 0; i < tries; i++) {
     try {
-      return await fetchWithProgress(url, onProgress);
+      // 第一次优先接上 index.html 里提前发起的那个请求；读失败的话下一轮自己重新发
+      return await fetchWithProgress(url, onProgress, i === 0 ? firstResponse : null);
     } catch (err) {
       lastErr = err;
       console.warn(`模型下载失败（第 ${i + 1}/${tries} 次）:`, err);
@@ -958,9 +1028,15 @@ async function fetchModelWithRetry(url, onProgress, tries = 3) {
 }
 
 /** 边下边报进度；content-length 是压缩后的大小，所以只报"已下载多少"不报百分比 */
-async function fetchWithProgress(url, onProgress) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`模型下载失败 HTTP ${res.status}`);
+async function fetchWithProgress(url, onProgress, preResponse) {
+  // preResponse 可能是 index.html 里那个还没 await 的 promise，必须 await 一次
+  const res = preResponse ? await preResponse : await fetch(url);
+  return readStream(res, onProgress);
+}
+
+/** 把 response 读成 blob，顺便每块回调一次已收字节数 */
+async function readStream(res, onProgress) {
+  if (!res || !res.ok) throw new Error(`下载失败 HTTP ${(res && res.status) || 0}`);
   if (!res.body || !res.body.getReader) return res.blob();
   const reader = res.body.getReader();
   const chunks = [];

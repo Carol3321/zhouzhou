@@ -7,6 +7,26 @@
   // 微信内置浏览器通常拿不到摄像头权限，先转到提示页，别让人看到"手势不可用"以为坏了
   if (/MicroMessenger/i.test(navigator.userAgent)) location.replace('open-in-browser.html');
 </script>
+<script>
+  // 引擎的两个大文件（wasm 8.7MB + 模型 7.8MB）在这里就发起请求：
+  // 这段跑在主脚本之前，既不耽误页面渲染，又让两份文件真正同时下载
+  // （以前是脚本执行完、相册加载完才开始下，白白晚十几秒）。
+  (function () {
+    try {
+      var SIMD = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 254, 15, 26, 11]);
+      var simd = false;
+      try { simd = WebAssembly.validate(SIMD); } catch (e) { simd = false; }
+      var base = 'assets/wasm/' + (simd ? 'vision_wasm_internal' : 'vision_wasm_nosimd_internal');
+      window.__prefetch = {
+        simd: simd,
+        wasmUrl: base + '.wasm',
+        wasm: fetch(base + '.wasm'),
+        wasmJs: fetch(base + '.js'),
+        model: fetch('assets/hand_landmarker.task')
+      };
+    } catch (e) { window.__prefetch = null; }
+  })();
+</script>
 <title>希望你的每天都是圣诞🎄</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext y='52' font-size='44'%3E%F0%9F%8E%84%3C/text%3E%3C/svg%3E">
 <style>
