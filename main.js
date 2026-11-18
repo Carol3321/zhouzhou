@@ -896,11 +896,20 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** WebGL 都拿不到的话就别试 GPU 了，直接 CPU */
+/** WebGL 都拿不到的话就别试 GPU 了，直接 CPU；软件渲染也直接 CPU */
 function supportsWebGL2() {
   try {
     const c = document.createElement('canvas');
-    return !!(c.getContext('webgl2') || c.getContext('webgl'));
+    const gl = c.getContext('webgl2') || c.getContext('webgl');
+    if (!gl) return false;
+    // 软件渲染（Basic Render Driver / SwiftShader / llvmpipe）编译 GPU 图极慢，
+    // 走 GPU 白等几十秒还起不来，直接判成"无 GPU"走 CPU
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    if (dbg) {
+      const r = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '').toLowerCase();
+      if (/basic render|swiftshader|llvmpipe|software/.test(r)) return false;
+    }
+    return true;
   } catch (e) {
     return false;
   }
