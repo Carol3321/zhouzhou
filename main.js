@@ -834,7 +834,7 @@ function startModelLoad() {
   // 模型解压后 7.46MB，用它算百分比和剩余时间，让人知道要等多久
   const MODEL_BYTES = 7.46 * 1048576;
   const t0 = performance.now();
-  const modelBlob = fetchWithProgress(MODEL_URL, (got) => {
+  const modelBlob = fetchModelWithRetry(MODEL_URL, (got) => {
     if (STATE.mode === 'FOCUS') return;   // 正在翻照片就别抢提示
     const pct = Math.min(99, Math.round((got / MODEL_BYTES) * 100));
     const secs = (performance.now() - t0) / 1000;
@@ -892,7 +892,9 @@ function startModelLoad() {
 const GPU_FAST_TRY_MS = 8000;            // GPU 只快试 8 秒，不成就换 CPU
 const ENGINE_TOTAL_TIMEOUT_MS = 240000;  // CPU 给足 4 分钟：慢机器编译计算图很吃时间
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** WebGL 都拿不到的话就别试 GPU 了，直接 CPU */
 function supportsWebGL2() {
@@ -927,6 +929,23 @@ function handOptions(modelUrl, delegate) {
     minHandPresenceConfidence: 0.5,
     minTrackingConfidence: 0.5
   };
+}
+
+/** 16MB 在慢网/代理下很容易中途断流；断了就自动重下，别让页面永远停在某个百分比 */
+async function fetchModelWithRetry(url, onProgress, tries = 3) {
+  let lastErr = null;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fetchWithProgress(url, onProgress);
+    } catch (err) {
+      lastErr = err;
+      console.warn(`模型下载失败（第 ${i + 1}/${tries} 次）:`, err);
+      if (i === tries - 1) break;
+      if (STATE.mode !== 'FOCUS') setHintText(`模型下载中断，正在重试（${i + 2}/${tries}）…`, false);
+      await sleep(1500 * (i + 1));
+    }
+  }
+  throw new Error(`模型下载失败：${(lastErr && lastErr.message) || '网络中断'}`);
 }
 
 /** 边下边报进度；content-length 是压缩后的大小，所以只报"已下载多少"不报百分比 */
