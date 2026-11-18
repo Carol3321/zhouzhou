@@ -807,8 +807,8 @@ async function initMediaPipe() {
   modelReady
     .then((lm) => {
       handLandmarker = lm;
-      // 引擎一就绪就立刻把底部那行切回正常文案：
-      // 之前要等下一帧检测到画面才会刷新，慢一帧看起来就像还卡着
+      // 引擎一就绪就立刻把底部那行切回正常文案（setHintText 的 busy 默认 false
+      // 会解除「忙碌」锁，updateHud 从下一帧起正常接管）
       if (STATE.mode !== 'FOCUS') setHintText('摄像头已就绪 · 把手举到画面里', false);
     })
     .catch((err) => {
@@ -841,7 +841,7 @@ function startModelLoad() {
     const speed = got / Math.max(secs, 1);                       // 字节/秒
     const left = Math.max(0, (MODEL_BYTES - got) / Math.max(speed, 1));
     const eta = left >= 90 ? `${Math.round(left / 60)} 分钟` : `${Math.max(1, Math.round(left))} 秒`;
-    setHintText(`识别模型 ${pct}% · 约还需 ${eta}`, false);
+    setHintText(`识别模型 ${pct}% · 约还需 ${eta}`, false, true);
   });
 
   modelReady = (async () => {
@@ -912,7 +912,7 @@ function announceEngine(label) {
   const tick = () => {
     if (STATE.mode === 'FOCUS') return;
     const secs = Math.round((performance.now() - started) / 1000);
-    setHintText(`${label} · 已等 ${secs} 秒`, false);
+    setHintText(`${label} · 已等 ${secs} 秒`, false, true);
   };
   tick();
   const id = setInterval(tick, 1000);
@@ -941,7 +941,7 @@ async function fetchModelWithRetry(url, onProgress, tries = 3) {
       lastErr = err;
       console.warn(`模型下载失败（第 ${i + 1}/${tries} 次）:`, err);
       if (i === tries - 1) break;
-      if (STATE.mode !== 'FOCUS') setHintText(`模型下载中断，正在重试（${i + 2}/${tries}）…`, false);
+      if (STATE.mode !== 'FOCUS') setHintText(`模型下载中断，正在重试（${i + 2}/${tries}）…`, false, true);
       await sleep(1500 * (i + 1));
     }
   }
@@ -1229,8 +1229,9 @@ function setHint(mode) {
     : (MODE_TEXT[mode] || MODE_TEXT.IDLE);
 }
 
-/** 直接设置提示文字；warn=true 表示错误（红色、且不会被状态刷新覆盖） */
-function setHintText(text, warn = true) {
+/** 直接设置提示文字；warn=true 表示错误（红色、且不会被状态刷新覆盖）；
+ *  busy=true 表示临时进度文字（下载/引擎启动），同样不该被 updateHud 覆盖 */
+function setHintText(text, warn = true, busy = false) {
   if (!ui.mode) return;
   ui.mode.textContent = text;
   if (warn) {
@@ -1238,7 +1239,8 @@ function setHintText(text, warn = true) {
     if (ui.hint) ui.hint.classList.add('warn');
     if (ui.dot) ui.dot.classList.remove('on');
   } else {
-    ui.mode.dataset.state = '';
+    // busy 的进度文字要挡住 updateHud；普通状态文字则不锁，交给 updateHud 接管
+    ui.mode.dataset.state = busy ? 'BUSY' : '';
     if (ui.hint) ui.hint.classList.remove('warn');
   }
 }
@@ -1256,7 +1258,8 @@ function updateHud(ev, force = false) {
 
   // 顶部/底部主提示：只有"识别到手"时才覆盖为手势名，避免一闪一闪
   if (ui.mode) {
-    if (ui.mode.dataset.state === 'ERR') return;   // 出错信息不要被状态刷掉
+    // 出错 / 引擎启动中（进度文字）时，都不要被状态刷新覆盖掉
+    if (ui.mode.dataset.state === 'ERR' || ui.mode.dataset.state === 'BUSY') return;
     const info = STATE.mode === 'FOCUS' ? focusInfo() : null;
     if (info) {
       // 用方向键翻照片时也要显示序号（不依赖是否识别到手）
